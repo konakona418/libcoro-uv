@@ -28,6 +28,8 @@ option(LIBCORO_BUILD_EXAMPLES        "Build the examples, Default=ON." ON)
 option(LIBCORO_RUN_GITCONFIG         "Set the githooks directory to auto format and update the readme, Default=OFF." OFF)
 option(LIBCORO_BUILD_SHARED_LIBS     "Build shared libraries, Default=OFF." OFF)
 
+option(LIBCORO_EXTENSION_USE_LIBUV   "Use libuv extension, Default=ON." ON)
+
 # Set the githooks directory to auto format and update the readme.
 if (LIBCORO_RUN_GITCONFIG)
     message("${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR} -> git config --local core.hooksPath .githooks")
@@ -66,6 +68,12 @@ else()
     endif()
 endif()
 
+# add support for libuv
+if(LIBCORO_EXTENSION_USE_LIBUV)
+    message("Using LibUV")
+    add_subdirectory(vendor/libuv/libuv)
+endif()
+
 set(BUILD_SHARED_LIBS ${LIBCORO_BUILD_SHARED_LIBS} CACHE INTERNAL "")
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ${LIBCORO_BUILD_SHARED_LIBS} CACHE INTERNAL "")
 
@@ -95,6 +103,11 @@ set(LIBCORO_SOURCE_FILES
     include/coro/when_all.hpp
     include/coro/when_any.hpp
 )
+
+# add libuv extension headers and sources
+if(LIBCORO_EXTENSION_USE_LIBUV)
+    list(APPEND LIBCORO_SOURCE_FILES include/coro/uv_thread_pool.hpp src/uv_thread_pool.cpp)
+endif()
 
 if(LIBCORO_FEATURE_NETWORKING)
     list(APPEND LIBCORO_SOURCE_FILES
@@ -160,6 +173,12 @@ if(LIBCORO_FEATURE_NETWORKING)
         target_link_libraries(${PROJECT_NAME} PUBLIC OpenSSL::SSL OpenSSL::Crypto)
         target_compile_definitions(${PROJECT_NAME} PUBLIC LIBCORO_FEATURE_TLS)
     endif()
+endif()
+
+# links libuv
+if(LIBCORO_EXTENSION_USE_LIBUV)
+    message("Linking LibUV")
+    target_link_libraries(${PROJECT_NAME} PUBLIC libuv::libuv)
 endif()
 
 if(${CMAKE_CXX_COMPILER_ID} MATCHES "GNU")

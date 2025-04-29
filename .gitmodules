@@ -1,3 +1,6 @@
 [submodule "vendor/c-ares/c-ares"]
         path = vendor/c-ares/c-ares
         url = https://github.com/c-ares/c-ares.git
+[submodule "vendor/libuv/libuv"]
+	path = vendor/libuv/libuv
+	url = https://github.com/libuv/libuv.git
