@@ -19,8 +19,19 @@ namespace coro {
     }
 
     uv_thread_pool::uv_thread_pool(options opts) noexcept : m_options(std::move(opts)) {
-        m_worker = std::thread([this]() mutable {
+        m_worker = std::thread([this]() {
             executor(0);
+        });
+
+        uv_async_init(m_loop.get_loop(), &m_main_loop_close_handle, [](uv_async_t* handle) {
+            uv_stop(handle->loop);
+        });
+        uv_unref(reinterpret_cast<uv_handle_t*>(&m_main_loop_close_handle));
+
+        m_main_loop = std::thread([this]() {
+            while (!m_shutdown.load(std::memory_order::acquire)) {
+                m_loop.run(UV_RUN_DEFAULT);
+            }
         });
     }
 
@@ -70,6 +81,9 @@ namespace coro {
             if (m_worker.joinable()) {
                 m_worker.join();
             }
+
+            uv_async_send(&m_main_loop_close_handle);
+            m_main_loop.join();
         }
     }
 
@@ -78,9 +92,10 @@ namespace coro {
             m_options.on_worker_start(idx);
         }
 
-        const auto worker = [this]() {
+        const auto worker = [this](std::unique_lock<std::mutex> lock) {
             auto handle = m_queue.front();
             m_queue.pop_front();
+            lock.unlock();
 
             auto* ctx = new work_context(handle, this);
 
@@ -96,23 +111,31 @@ namespace coro {
             });
             ctx->work.data = static_cast<void *>(ctx);
 
+            lock.lock();
             if (!m_loop.queue_work(work, &ctx->work)) {
                 // TODO: handle error
             }
+            lock.unlock();
         };
 
         while (!m_shutdown.load(std::memory_order::acquire)) {
             std::unique_lock lock { m_wait_mutex };
-            m_wait_condition.wait(lock, [this]() { return !m_queue.empty(); });
+            m_wait_condition.wait(lock, [this]() {
+                if (m_shutdown.load(std::memory_order::acquire)) {
+                    return true;
+                }
+                return !m_queue.empty();
+            });
+
+            if (m_shutdown.load(std::memory_order::acquire)) {
+                break;
+            }
 
             if (m_queue.empty()) {
                 continue;
             }
 
-            worker();
-            m_loop.run(UV_RUN_DEFAULT);
-
-            lock.unlock();
+            worker(std::move(lock));
         }
 
         while (m_size.load(std::memory_order::acquire) > 0) {
@@ -121,10 +144,7 @@ namespace coro {
                 break;
             }
 
-            worker();
-            m_loop.run(UV_RUN_DEFAULT);
-
-            lock.unlock();
+            worker(std::move(lock));
         }
 
         if (m_options.on_worker_stop != nullptr) {

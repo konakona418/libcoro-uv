@@ -25,6 +25,16 @@ extern "C" {
 namespace coro {
     class uv_thread_pool {
     public:
+        struct options {
+            std::function<void(size_t thread_id)> on_worker_start = nullptr;
+            std::function<void(size_t thread_id)> on_worker_stop  = nullptr;
+
+            static auto defaults() -> options {
+                options opt {};
+                return opt;
+            }
+        };
+
         class operation {
             friend class uv_thread_pool;
             explicit operation(uv_thread_pool& pool) noexcept;
@@ -41,16 +51,6 @@ namespace coro {
         private:
             uv_thread_pool& m_thread_pool;
             std::coroutine_handle<> m_awaiting_coroutine { nullptr };
-        };
-
-        struct options {
-            std::function<void(size_t thread_id)> on_worker_start = nullptr;
-            std::function<void(size_t thread_id)> on_worker_stop  = nullptr;
-
-            static auto defaults() -> options {
-                options opt {};
-                return opt;
-            }
         };
 
         explicit uv_thread_pool(options opts = options::defaults()) noexcept;
@@ -97,7 +97,7 @@ namespace coro {
             }
 
             const size_t total = std::size(handles) - null_handles;
-            /*if (total >= m_threads.size()) {
+            /*if (total >= m_workers.size()) {
                 m_wait_condition.notify_all();
             } else {
                 for (size_t i = 0; i < total; ++i) {
@@ -131,6 +131,8 @@ namespace coro {
         [[nodiscard]] auto queue_empty() const noexcept -> bool {
             return queue_size() == 0;
         }
+
+        [[nodiscard]] auto get_raw_loop() const noexcept -> uv_loop_t* { return m_loop.get_loop(); }
 
         /* issue with this.
          * this problem is concerned with LibUV not me.
@@ -169,12 +171,18 @@ namespace coro {
             auto close() const -> void;
 
             [[nodiscard]] auto queue_work(uv_work work, uv_work_t* real_work) const -> int;
+
+            [[nodiscard]] auto get_loop() const noexcept -> uv_loop_t* { return m_loop; }
         private:
             uv_loop_t* m_loop;
         };
 
         options m_options;
         std::thread m_worker;
+
+        std::thread m_main_loop;
+        uv_async_t m_main_loop_close_handle {};
+
         uv_loop m_loop;
 
         std::mutex m_wait_mutex;
@@ -187,5 +195,6 @@ namespace coro {
 
         std::atomic<size_t> m_size { 0 };
         std::atomic<bool> m_shutdown { false };
+
     };
 }

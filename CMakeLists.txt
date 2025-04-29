@@ -106,7 +106,18 @@ set(LIBCORO_SOURCE_FILES
 
 # add libuv extension headers and sources
 if(LIBCORO_EXTENSION_USE_LIBUV)
-    list(APPEND LIBCORO_SOURCE_FILES include/coro/uv_thread_pool.hpp src/uv_thread_pool.cpp)
+    file(GLOB_RECURSE LIBUV_EXTENSION_HEADERS include/coro/uv/*.hpp)
+    file(GLOB_RECURSE LIBUV_EXTENSION_SOURCES src/uv/*.cpp)
+
+    list(APPEND
+            LIBCORO_SOURCE_FILES
+            include/coro/uv_thread_pool.hpp src/uv_thread_pool.cpp
+            include/coro/uv_scheduler.hpp src/uv_scheduler.cpp
+    )
+    list(APPEND
+            LIBCORO_SOURCE_FILES
+            ${LIBUV_EXTENSION_HEADERS} ${LIBUV_EXTENSION_SOURCES}
+    )
 endif()
 
 if(LIBCORO_FEATURE_NETWORKING)
