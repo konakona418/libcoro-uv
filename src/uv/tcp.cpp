@@ -15,7 +15,7 @@ namespace coro::uv {
 
         m_client.m_uv_client->data = this;
         uv_read_start(
-            reinterpret_cast<uv_stream_t*>(m_client.m_uv_client),
+            reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
             [](uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
                 auto* awaiter = static_cast<read_awaiter *>(handle->data);
 
@@ -43,6 +43,44 @@ namespace coro::uv {
         return m_result;
     }
 
+    auto client::write_awaiter::await_suspend(std::coroutine_handle<> handle) -> void {
+        m_handle = handle;
+
+        auto* write_req = new uv_write_t;
+
+        auto* ctx = new write_context;
+        ctx->awaiter = this;
+        ctx->buf = uv_buf_init(reinterpret_cast<char *>(m_buf), m_buf_size);
+
+        write_req->data = ctx;
+
+        uv_write(write_req, reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
+                 &ctx->buf, 1,
+                 [](uv_write_t* req, int status) {
+                     auto* ctx = static_cast<write_context *>(req->data);
+
+                     if (status != 0) {
+                         auto exception_ptr = std::make_exception_ptr(std::runtime_error("write failed"));
+                         auto variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+
+                         ctx->awaiter->m_result = std::move(variant);
+                         ctx->awaiter->m_handle.resume();
+                         return;
+                     }
+
+                     auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(ctx->buf.len));
+                     ctx->awaiter->m_result = std::move(variant);
+                     ctx->awaiter->m_handle.resume();
+
+                     delete ctx;
+                     delete req;
+                 });
+    }
+
+    auto client::write_awaiter::await_resume() -> std::variant<size_t, std::exception_ptr> {
+        return m_result;
+    }
+
     auto client::_accept(uv_stream_t* server) -> int {
         const auto status = uv_accept(server, reinterpret_cast<uv_stream_t *>(m_uv_client));
         if (status != 0) {
@@ -56,8 +94,8 @@ namespace coro::uv {
         co_return co_await read_awaiter(*this, buf, buf_size);
     }
 
-    auto client::write(const uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>> {
-        throw std::runtime_error("not implemented");
+    auto client::write(uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>> {
+        co_return co_await write_awaiter(*this, buf, buf_size);
     }
 
     auto client::close() -> void {
@@ -132,7 +170,7 @@ namespace coro::uv {
 
     auto server::uv_tcp_poller::subscribe(const std::shared_ptr<tcp_poll_awaiter>& awaiter) -> void {
         {
-            std::scoped_lock lock { m_deque_mutex };
+            std::scoped_lock lock{m_deque_mutex};
             m_pollers.push_back(awaiter);
         }
     }
@@ -146,9 +184,23 @@ namespace coro::uv {
                 auto poller = m_pollers.front();
                 m_pollers.pop_front();
 
+                // this means that poller is already resumed
+                // or how can m_client has already been set?
+                if (poller->m_client != std::nullopt) {
+                    // however we need to push client to buffer, rather than simply dispose it
+                    if (std::holds_alternative<client>(poll_result)) {
+                        m_client_buffer.push_back(std::move(std::get<client>(poll_result)));
+                    } else {
+                        // todo: handle exception
+                    }
+                    return;
+                }
+
                 if (!std::holds_alternative<client>(poll_result)) {
                     poller->m_client = std::nullopt;
                     poller->m_handle.resume();
+
+                    return;
                 }
 
                 poller->m_client = std::move(std::get<client>(poll_result));

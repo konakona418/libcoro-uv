@@ -43,7 +43,31 @@ namespace coro::uv {
         };
 
         class write_awaiter {
+        public:
+            friend class client;
 
+            explicit write_awaiter(client& client, uint8_t* buf, size_t buf_size)
+                : m_client(client), m_buf(buf), m_buf_size(buf_size) {}
+
+            auto await_ready() -> bool { return false; }
+
+            auto await_suspend(std::coroutine_handle<> handle) -> void;
+
+            auto await_resume() -> std::variant<size_t, std::exception_ptr>;
+
+        private:
+            struct write_context {
+                write_awaiter* awaiter;
+                uv_buf_t buf;
+            };
+
+            client& m_client;
+            std::coroutine_handle<> m_handle { nullptr };
+            std::variant<size_t, std::exception_ptr> m_result;
+
+            size_t m_buf_size { 0 };
+            size_t m_bytes_written { 0 };
+            uint8_t* m_buf { nullptr };
         };
 
         explicit client(std::shared_ptr<coro::uv_scheduler> scheduler)
@@ -56,7 +80,7 @@ namespace coro::uv {
 
         auto read(uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>>;
 
-        auto write(const uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>>;
+        auto write(uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>>;
 
         auto close() -> void;
 
