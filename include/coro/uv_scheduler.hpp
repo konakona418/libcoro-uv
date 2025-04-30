@@ -45,7 +45,11 @@ namespace coro {
 
         auto yield_for(std::chrono::milliseconds timeout) -> coro::task<>;
 
+        auto yield_until(std::chrono::steady_clock::time_point time_point) -> coro::task<>;
+
         auto shutdown() -> void { m_thread_pool->shutdown(); }
+
+        auto get_raw_loop() const noexcept -> uv_loop_t* { return m_thread_pool->get_raw_loop(); }
 
     private:
         std::unique_ptr<uv_thread_pool> m_thread_pool;
