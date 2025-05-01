@@ -3,9 +3,10 @@
  * for better event loops and cross-platform support.
  */
 
-#pragma once
-
 #include "coro/uv_thread_pool.hpp"
+
+#include <cassert>
+
 #include "coro/detail/task_self_deleting.hpp"
 
 namespace coro {
@@ -95,7 +96,6 @@ namespace coro {
         const auto worker = [this](std::unique_lock<std::mutex> lock) {
             auto handle = m_queue.front();
             m_queue.pop_front();
-            lock.unlock();
 
             auto* ctx = new work_context(handle, this);
 
@@ -111,10 +111,8 @@ namespace coro {
             });
             ctx->work.data = static_cast<void *>(ctx);
 
-            lock.lock();
-            if (!m_loop.queue_work(work, &ctx->work)) {
-                // TODO: handle error
-            }
+            int result = m_loop.queue_work(work, &ctx->work);
+            assert(result == 0);
             lock.unlock();
         };
 
