@@ -39,6 +39,8 @@ namespace coro {
 
         auto schedule() -> operation { return operation(*this); }
 
+        auto resume(std::coroutine_handle<> handle) const -> bool { return m_thread_pool->resume(handle); }
+
         auto spawn(coro::task<void>&& task) const noexcept -> bool { return m_thread_pool->spawn(std::move(task)); }
 
         auto yield() -> operation { return operation(*this); }

@@ -9,12 +9,14 @@ namespace coro::uv {
             auto exception_ptr = std::make_exception_ptr(std::runtime_error("client closed"));
             auto variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
 
+            // todo: handle exception
+            //assert(m_client.m_scheduler->resume(m_handle));
             m_handle.resume();
             return;
         }
 
         m_client.m_uv_client->data = this;
-        uv_read_start(
+        int result = uv_read_start(
             reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
             [](uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
                 auto* awaiter = static_cast<read_awaiter *>(handle->data);
@@ -25,21 +27,34 @@ namespace coro::uv {
             }, [](uv_stream_t* stream, ssize_t n_read, const uv_buf_t* buf) {
                 auto* awaiter = static_cast<read_awaiter *>(stream->data);
                 if (n_read < 0) {
-                    auto exception_ptr = std::make_exception_ptr(std::runtime_error("read failed"));
-                    auto variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                    std::variant<size_t, std::exception_ptr> variant;
+                    if (n_read == UV_EOF) {
+                        auto exception_ptr = std::make_exception_ptr(std::runtime_error("end of file"));
+                        variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                    } else {
+                        auto exception_ptr = std::make_exception_ptr(std::runtime_error("read failed"));
+                        variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                    }
 
                     awaiter->m_result = std::move(variant);
+
                     awaiter->m_handle.resume();
+                    //awaiter->m_client.m_scheduler->resume(awaiter->m_handle);
                     return;
                 }
                 auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(std::abs(n_read)));
                 // no need to do abs() but why bother?
                 awaiter->m_result = std::move(variant);
+
                 awaiter->m_handle.resume();
+                //awaiter->m_client.m_scheduler->resume(awaiter->m_handle);
             });
+        assert(result == 0);
     }
 
     auto client::read_awaiter::await_resume() -> std::variant<size_t, std::exception_ptr> {
+        int err = uv_read_stop(reinterpret_cast<uv_stream_t *>(m_client.m_uv_client));
+        assert(err == 0);
         return m_result;
     }
 
@@ -65,12 +80,14 @@ namespace coro::uv {
 
                          ctx->awaiter->m_result = std::move(variant);
                          ctx->awaiter->m_handle.resume();
+                         //ctx->awaiter->m_client.m_scheduler->resume(ctx->awaiter->m_handle);
                          return;
                      }
 
                      auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(ctx->buf.len));
                      ctx->awaiter->m_result = std::move(variant);
                      ctx->awaiter->m_handle.resume();
+                     //ctx->awaiter->m_client.m_scheduler->resume(ctx->awaiter->m_handle);
 
                      delete ctx;
                      delete req;
@@ -117,7 +134,9 @@ namespace coro::uv {
         m_handle = handle;
         if (client.has_value()) {
             m_client = client;
-            m_handle.resume();
+
+            // todo: handle exception
+            assert(m_poller.m_scheduler->resume(m_handle)); // resume on the scheduler
         }
     }
 
@@ -198,13 +217,17 @@ namespace coro::uv {
 
                 if (!std::holds_alternative<client>(poll_result)) {
                     poller->m_client = std::nullopt;
-                    poller->m_handle.resume();
+                    // poller->m_handle.resume();
+                    m_scheduler->resume(poller->m_handle); // resume on the scheduler
 
                     return;
                 }
 
                 poller->m_client = std::move(std::get<client>(poll_result));
-                poller->m_handle.resume();
+                //poller->m_handle.resume();
+                m_scheduler->resume(poller->m_handle);
+                // resume on the scheduler
+                // do not resume the handle directly, or the uv_loop will suspend!
             }
         }
     }
