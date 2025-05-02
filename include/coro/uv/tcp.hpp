@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cassert>
 #include <coroutine>
 #include <memory>
 
@@ -12,7 +13,10 @@ extern "C" {
 
 #define DEFAULT_BACKLOG 128
 
-namespace coro::uv {
+namespace coro::uv::tcp {
+    template <typename T>
+    using tcp_result = std::variant<T, std::exception_ptr>;
+
     class client {
         uv_tcp_t* m_uv_client;
         std::shared_ptr<coro::uv_scheduler> m_scheduler;
@@ -73,7 +77,7 @@ namespace coro::uv {
         explicit client(std::shared_ptr<coro::uv_scheduler> scheduler)
             : m_scheduler(std::move(scheduler)) {
             m_uv_client = new uv_tcp_t;
-            uv_tcp_init(m_scheduler->get_raw_loop(), m_uv_client);
+            assert(uv_tcp_init(m_scheduler->get_raw_loop(), m_uv_client) == 0);
         }
 
         ~client() = default;
@@ -85,6 +89,10 @@ namespace coro::uv {
         auto close() -> void;
 
         auto _accept(uv_stream_t* server) -> int;
+
+        [[nodiscard]] auto get_handle() const -> uv_tcp_t* { return m_uv_client; }
+
+        auto set_handle(uv_tcp_t* handle) -> void { m_uv_client = handle; }
     };
 
     class server {
@@ -112,7 +120,7 @@ namespace coro::uv {
 
             auto await_suspend(std::coroutine_handle<> handle) -> void;
 
-            auto await_resume() -> uv::client;
+            auto await_resume() -> uv::tcp::client;
 
         private:
             uv_tcp_poller& m_poller;
@@ -197,4 +205,27 @@ namespace coro::uv {
         uv_tcp_poller m_poller;
         options m_options;
     };
+
+    class tcp_connect_awaiter {
+    public:
+        auto await_ready() -> bool { return false; }
+
+        auto await_suspend(std::coroutine_handle<> handle) -> void;
+
+        auto await_resume() -> std::variant<tcp::client, std::exception_ptr>;
+
+        tcp_connect_awaiter(const std::shared_ptr<coro::uv_scheduler>& scheduler, const uv::ip_address& addr)
+            : m_scheduler(scheduler), m_addr(addr), m_result(tcp::client(m_scheduler)) {
+        }
+
+    private:
+        std::shared_ptr<coro::uv_scheduler> m_scheduler;
+        uv::ip_address m_addr;
+        tcp_result<tcp::client> m_result;
+        std::coroutine_handle<> m_handle { nullptr };
+
+        uv_connect_t m_connect_handle;
+    };
+
+    auto connect(const std::shared_ptr<coro::uv_scheduler>& scheduler, const uv::ip_address& addr) -> coro::task<tcp_result<tcp::client>>;
 }

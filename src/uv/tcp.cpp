@@ -2,7 +2,7 @@
 
 #include <cassert>
 
-namespace coro::uv {
+namespace coro::uv::tcp {
     auto client::read_awaiter::await_suspend(std::coroutine_handle<> handle) -> void {
         m_handle = handle;
         if (m_client.m_closed) {
@@ -32,7 +32,9 @@ namespace coro::uv {
                         auto exception_ptr = std::make_exception_ptr(std::runtime_error("end of file"));
                         variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
                     } else {
-                        auto exception_ptr = std::make_exception_ptr(std::runtime_error("read failed"));
+                        const std::string err_str = uv_strerror(static_cast<int>(n_read));
+                        auto exception_ptr = std::make_exception_ptr(
+                            std::runtime_error("read failed: " + err_str));
                         variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
                     }
 
@@ -140,14 +142,14 @@ namespace coro::uv {
         }
     }
 
-    auto server::tcp_poll_awaiter::await_resume() -> uv::client {
+    auto server::tcp_poll_awaiter::await_resume() -> uv::tcp::client {
         if (m_client.has_value()) {
             return m_client.value();
         }
         throw std::runtime_error("accept failed");
     }
 
-    auto server::poll() -> coro::task<uv::client> {
+    auto server::poll() -> coro::task<uv::tcp::client> {
         auto poll_awaiter = std::make_shared<tcp_poll_awaiter>(m_poller);
         m_poller.subscribe(poll_awaiter);
         co_return co_await *poll_awaiter;
@@ -176,12 +178,12 @@ namespace coro::uv {
             auto* handle = static_cast<uv_tcp_poller *>(server->data);
             client client(handle->m_scheduler);
             if (!client._accept(server)) {
-                auto variant = std::variant<uv::client, std::exception_ptr>(std::move(client));
+                auto variant = std::variant<uv::tcp::client, std::exception_ptr>(std::move(client));
                 handle->_on_polling_event(std::move(variant));
                 return;
             }
             auto exception_ptr = std::make_exception_ptr(std::runtime_error("accept failed"));
-            auto variant = std::variant<uv::client, std::exception_ptr>(std::move(exception_ptr));
+            auto variant = std::variant<uv::tcp::client, std::exception_ptr>(std::move(exception_ptr));
             handle->_on_polling_event(std::move(variant));
         };
         uv_listen(reinterpret_cast<uv_stream_t *>(m_handle), backlog, cb);
@@ -230,5 +232,38 @@ namespace coro::uv {
                 // do not resume the handle directly, or the uv_loop will suspend!
             }
         }
+    }
+
+    auto tcp_connect_awaiter::await_suspend(std::coroutine_handle<> handle) -> void {
+        m_handle = handle;
+
+        auto* sock = std::get<tcp::client>(m_result).get_handle();
+
+        m_connect_handle.data = this;
+
+        sockaddr_in addr_in {};
+        uv_ip4_addr(m_addr.host().c_str(), m_addr.port(), &addr_in);
+
+        uv_tcp_connect(&m_connect_handle, sock,
+            reinterpret_cast<const sockaddr *>(&addr_in),
+            [](uv_connect_t* req, int status) {
+                auto* awaiter = static_cast<tcp_connect_awaiter *>(req->data);
+                if (status != 0) {
+                    awaiter->m_result.emplace<std::exception_ptr>(
+                        std::make_exception_ptr(std::runtime_error("connect failed")));
+                    awaiter->m_handle.resume();
+                    return;
+                }
+                std::get<tcp::client>(awaiter->m_result).set_handle(reinterpret_cast<uv_tcp_t*>(req->handle));
+                awaiter->m_handle.resume();
+            });
+    }
+
+    auto tcp_connect_awaiter::await_resume() -> std::variant<tcp::client, std::exception_ptr> {
+        return m_result;
+    }
+
+    auto connect(const std::shared_ptr<coro::uv_scheduler>& scheduler, const ip_address& addr) -> coro::task<tcp_result<tcp::client>> {
+        co_return co_await tcp_connect_awaiter(scheduler, addr);
     }
 }
