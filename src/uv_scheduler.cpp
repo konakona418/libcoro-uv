@@ -19,9 +19,8 @@ namespace coro {
 
 
     auto uv_scheduler::yield_for(std::chrono::milliseconds timeout) -> coro::task<> {
-        if (timeout <= std::chrono::milliseconds { 0 }) {
-            co_await schedule();
-        }
+        if (timeout <= std::chrono::milliseconds { 0 } )
+            timeout = std::chrono::milliseconds { 1 };
         auto* uv_loop = m_thread_pool->get_raw_loop();
 
         auto awaiter = coro::timer_awaiter { uv_loop, static_cast<uint64_t>(timeout.count()) };
@@ -32,9 +31,8 @@ namespace coro {
 
     auto uv_scheduler::yield_until(std::chrono::steady_clock::time_point time_point) -> coro::task<> {
         std::chrono::duration timeout = time_point - std::chrono::steady_clock::now();
-        if (timeout <= std::chrono::milliseconds { 0 }) {
-            co_await schedule();
-        }
+        if (timeout <= std::chrono::milliseconds { 0 } )
+            timeout = std::chrono::milliseconds { 1 };
         auto* uv_loop = m_thread_pool->get_raw_loop();
 
         auto awaiter = coro::timer_awaiter { uv_loop, static_cast<uint64_t>(timeout.count()) };
