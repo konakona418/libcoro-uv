@@ -53,6 +53,8 @@ namespace coro {
 
         auto get_raw_loop() const noexcept -> uv_loop_t* { return m_thread_pool->get_raw_loop(); }
 
+        auto get_lock() const noexcept -> std::unique_lock<std::mutex> { return m_thread_pool->get_lock(); }
+
     private:
         std::unique_ptr<uv_thread_pool> m_thread_pool;
     };

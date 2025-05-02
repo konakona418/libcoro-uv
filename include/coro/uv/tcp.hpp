@@ -3,6 +3,7 @@
 #include <cassert>
 #include <coroutine>
 #include <memory>
+#include <utility>
 
 #include "coro/uv_scheduler.hpp"
 #include "coro/uv/ip_address.hpp"
@@ -78,6 +79,27 @@ namespace coro::uv::tcp {
             : m_scheduler(std::move(scheduler)) {
             m_uv_client = new uv_tcp_t;
             assert(uv_tcp_init(m_scheduler->get_raw_loop(), m_uv_client) == 0);
+        }
+
+        client(std::shared_ptr<coro::uv_scheduler> scheduler, uv_tcp_t* handle) {
+            m_scheduler = std::move(scheduler);
+            m_uv_client = handle;
+        }
+
+        client(const client&) = delete;
+        client& operator=(const client&) = delete;
+
+        client(client&& other)  noexcept {
+            m_scheduler = std::move(other.m_scheduler);
+            m_uv_client = other.m_uv_client;
+            other.m_uv_client = nullptr;
+        }
+
+        client& operator=(client&& other) noexcept {
+            m_scheduler = std::move(other.m_scheduler);
+            m_uv_client = other.m_uv_client;
+            other.m_uv_client = nullptr;
+            return *this;
         }
 
         ~client() = default;
@@ -176,7 +198,7 @@ namespace coro::uv::tcp {
                         return std::nullopt;
                     }
 
-                    auto client = m_client_buffer.front();
+                    auto client = std::move(m_client_buffer.front());
                     m_client_buffer.pop_front();
                     return client;
                 }
@@ -215,16 +237,18 @@ namespace coro::uv::tcp {
         auto await_resume() -> std::variant<tcp::client, std::exception_ptr>;
 
         tcp_connect_awaiter(const std::shared_ptr<coro::uv_scheduler>& scheduler, const uv::ip_address& addr)
-            : m_scheduler(scheduler), m_addr(addr), m_result(tcp::client(m_scheduler)) {
+            : m_scheduler(scheduler), m_addr(addr), m_result(nullptr) {
         }
 
     private:
         std::shared_ptr<coro::uv_scheduler> m_scheduler;
         uv::ip_address m_addr;
-        tcp_result<tcp::client> m_result;
-        std::coroutine_handle<> m_handle { nullptr };
 
-        uv_connect_t m_connect_handle;
+        std::coroutine_handle<> m_handle { nullptr };
+        tcp_result<tcp::client> m_result;
+
+        uv_connect_t m_connect_handle {};
+        uv_tcp_t* m_tcp_handle { nullptr };
     };
 
     auto connect(const std::shared_ptr<coro::uv_scheduler>& scheduler, const uv::ip_address& addr) -> coro::task<tcp_result<tcp::client>>;

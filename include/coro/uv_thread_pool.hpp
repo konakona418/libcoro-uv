@@ -134,6 +134,10 @@ namespace coro {
 
         [[nodiscard]] auto get_raw_loop() const noexcept -> uv_loop_t* { return m_loop.get_loop(); }
 
+        auto get_lock() -> std::unique_lock<std::mutex> {
+            return std::move(std::unique_lock { m_wait_mutex });
+        }
+
         /* issue with this.
          * this problem is concerned with LibUV not me.
          * which uses getenv() to get the thread pool size directly,

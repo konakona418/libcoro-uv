@@ -16,6 +16,8 @@ namespace coro::uv::tcp {
         }
 
         m_client.m_uv_client->data = this;
+
+        auto lock = m_client.m_scheduler->get_lock();
         int result = uv_read_start(
             reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
             [](uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
@@ -51,11 +53,16 @@ namespace coro::uv::tcp {
                 awaiter->m_handle.resume();
                 //awaiter->m_client.m_scheduler->resume(awaiter->m_handle);
             });
+        lock.unlock();
+
         assert(result == 0);
     }
 
     auto client::read_awaiter::await_resume() -> std::variant<size_t, std::exception_ptr> {
+        auto lock = m_client.m_scheduler->get_lock();
         int err = uv_read_stop(reinterpret_cast<uv_stream_t *>(m_client.m_uv_client));
+        lock.unlock();
+
         assert(err == 0);
         return m_result;
     }
@@ -71,6 +78,7 @@ namespace coro::uv::tcp {
 
         write_req->data = ctx;
 
+        auto lock = m_client.m_scheduler->get_lock();
         uv_write(write_req, reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
                  &ctx->buf, 1,
                  [](uv_write_t* req, int status) {
@@ -94,6 +102,7 @@ namespace coro::uv::tcp {
                      delete ctx;
                      delete req;
                  });
+        lock.unlock();
     }
 
     auto client::write_awaiter::await_resume() -> std::variant<size_t, std::exception_ptr> {
@@ -135,7 +144,7 @@ namespace coro::uv::tcp {
 
         m_handle = handle;
         if (client.has_value()) {
-            m_client = client;
+            m_client = std::move(client);
 
             // todo: handle exception
             assert(m_poller.m_scheduler->resume(m_handle)); // resume on the scheduler
@@ -144,7 +153,7 @@ namespace coro::uv::tcp {
 
     auto server::tcp_poll_awaiter::await_resume() -> uv::tcp::client {
         if (m_client.has_value()) {
-            return m_client.value();
+            return std::move(m_client.value());
         }
         throw std::runtime_error("accept failed");
     }
@@ -237,30 +246,40 @@ namespace coro::uv::tcp {
     auto tcp_connect_awaiter::await_suspend(std::coroutine_handle<> handle) -> void {
         m_handle = handle;
 
-        auto* sock = std::get<tcp::client>(m_result).get_handle();
+        m_tcp_handle = new uv_tcp_t;
+        uv_tcp_init(m_scheduler->get_raw_loop(), m_tcp_handle);
 
         m_connect_handle.data = this;
 
         sockaddr_in addr_in {};
         uv_ip4_addr(m_addr.host().c_str(), m_addr.port(), &addr_in);
 
-        uv_tcp_connect(&m_connect_handle, sock,
+        auto lock = m_scheduler->get_lock();
+        uv_tcp_connect(&m_connect_handle, m_tcp_handle,
             reinterpret_cast<const sockaddr *>(&addr_in),
             [](uv_connect_t* req, int status) {
                 auto* awaiter = static_cast<tcp_connect_awaiter *>(req->data);
                 if (status != 0) {
                     awaiter->m_result.emplace<std::exception_ptr>(
                         std::make_exception_ptr(std::runtime_error("connect failed")));
+
+                    uv_close(reinterpret_cast<uv_handle_t *>(awaiter->m_tcp_handle), [](uv_handle_t* handle) {
+                        delete reinterpret_cast<uv_tcp_t *>(handle);
+                    });
+
                     awaiter->m_handle.resume();
                     return;
                 }
-                std::get<tcp::client>(awaiter->m_result).set_handle(reinterpret_cast<uv_tcp_t*>(req->handle));
+                awaiter->m_result.emplace<tcp::client>(tcp::client(awaiter->m_scheduler, awaiter->m_tcp_handle));
+
                 awaiter->m_handle.resume();
             });
+
+        lock.unlock();
     }
 
     auto tcp_connect_awaiter::await_resume() -> std::variant<tcp::client, std::exception_ptr> {
-        return m_result;
+        return std::move(m_result);
     }
 
     auto connect(const std::shared_ptr<coro::uv_scheduler>& scheduler, const ip_address& addr) -> coro::task<tcp_result<tcp::client>> {
