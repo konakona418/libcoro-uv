@@ -55,6 +55,18 @@ namespace coro {
 
         auto get_lock() const noexcept -> std::unique_lock<std::mutex> { return m_thread_pool->get_lock(); }
 
+        template <typename Ret, typename Fn>
+        auto execute_locked(Fn fn) -> Ret {
+            if constexpr (std::is_same_v<Ret, void>) {
+                auto lock = get_lock();
+                fn();
+                lock.unlock();
+                return;
+            }
+            auto lock = get_lock();
+            return fn();
+        }
+
     private:
         std::unique_ptr<uv_thread_pool> m_thread_pool;
     };

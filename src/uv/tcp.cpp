@@ -17,43 +17,44 @@ namespace coro::uv::tcp {
 
         m_client.m_uv_client->data = this;
 
-        auto lock = m_client.m_scheduler->get_lock();
-        int result = uv_read_start(
-            reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
-            [](uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
-                auto* awaiter = static_cast<read_awaiter *>(handle->data);
+        int result = m_client.m_scheduler->execute_locked<int>([this] {
+            int result = uv_read_start(
+                reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
+                [](uv_handle_t* handle, size_t suggested_size, uv_buf_t* buf) {
+                    auto* awaiter = static_cast<read_awaiter *>(handle->data);
 
-                buf->base = reinterpret_cast<char *>(awaiter->m_buf);
-                buf->len = awaiter->m_buf_size;
-                // yes we can use the suggested size, but I'll leave it for now
-            }, [](uv_stream_t* stream, ssize_t n_read, const uv_buf_t* buf) {
-                auto* awaiter = static_cast<read_awaiter *>(stream->data);
-                if (n_read < 0) {
-                    std::variant<size_t, std::exception_ptr> variant;
-                    if (n_read == UV_EOF) {
-                        auto exception_ptr = std::make_exception_ptr(std::runtime_error("end of file"));
-                        variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
-                    } else {
-                        const std::string err_str = uv_strerror(static_cast<int>(n_read));
-                        auto exception_ptr = std::make_exception_ptr(
-                            std::runtime_error("read failed: " + err_str));
-                        variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                    buf->base = reinterpret_cast<char *>(awaiter->m_buf);
+                    buf->len = awaiter->m_buf_size;
+                    // yes we can use the suggested size, but I'll leave it for now
+                }, [](uv_stream_t* stream, ssize_t n_read, const uv_buf_t* buf) {
+                    auto* awaiter = static_cast<read_awaiter *>(stream->data);
+                    if (n_read < 0) {
+                        std::variant<size_t, std::exception_ptr> variant;
+                        if (n_read == UV_EOF) {
+                            auto exception_ptr = std::make_exception_ptr(std::runtime_error("end of file"));
+                            variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                        } else {
+                            const std::string err_str = uv_strerror(static_cast<int>(n_read));
+                            auto exception_ptr = std::make_exception_ptr(
+                                std::runtime_error("read failed: " + err_str));
+                            variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                        }
+
+                        awaiter->m_result = std::move(variant);
+
+                        awaiter->m_handle.resume();
+                        //awaiter->m_client.m_scheduler->resume(awaiter->m_handle);
+                        return;
                     }
-
+                    auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(std::abs(n_read)));
+                    // no need to do abs() but why bother?
                     awaiter->m_result = std::move(variant);
 
                     awaiter->m_handle.resume();
                     //awaiter->m_client.m_scheduler->resume(awaiter->m_handle);
-                    return;
-                }
-                auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(std::abs(n_read)));
-                // no need to do abs() but why bother?
-                awaiter->m_result = std::move(variant);
-
-                awaiter->m_handle.resume();
-                //awaiter->m_client.m_scheduler->resume(awaiter->m_handle);
-            });
-        lock.unlock();
+                });
+            return result;
+        });
 
         assert(result == 0);
     }
@@ -78,31 +79,31 @@ namespace coro::uv::tcp {
 
         write_req->data = ctx;
 
-        auto lock = m_client.m_scheduler->get_lock();
-        uv_write(write_req, reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
-                 &ctx->buf, 1,
-                 [](uv_write_t* req, int status) {
-                     auto* ctx = static_cast<write_context *>(req->data);
+        m_client.m_scheduler->execute_locked<void>([write_req, this, ctx] {
+            uv_write(write_req, reinterpret_cast<uv_stream_t *>(m_client.m_uv_client),
+                     &ctx->buf, 1,
+                     [](uv_write_t* req, int status) {
+                         auto* ctx = static_cast<write_context *>(req->data);
 
-                     if (status != 0) {
-                         auto exception_ptr = std::make_exception_ptr(std::runtime_error("write failed"));
-                         auto variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
+                         if (status != 0) {
+                             auto exception_ptr = std::make_exception_ptr(std::runtime_error("write failed"));
+                             auto variant = std::variant<size_t, std::exception_ptr>(std::move(exception_ptr));
 
+                             ctx->awaiter->m_result = std::move(variant);
+                             ctx->awaiter->m_handle.resume();
+                             //ctx->awaiter->m_client.m_scheduler->resume(ctx->awaiter->m_handle);
+                             return;
+                         }
+
+                         auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(ctx->buf.len));
                          ctx->awaiter->m_result = std::move(variant);
                          ctx->awaiter->m_handle.resume();
                          //ctx->awaiter->m_client.m_scheduler->resume(ctx->awaiter->m_handle);
-                         return;
-                     }
 
-                     auto variant = std::variant<size_t, std::exception_ptr>(static_cast<size_t>(ctx->buf.len));
-                     ctx->awaiter->m_result = std::move(variant);
-                     ctx->awaiter->m_handle.resume();
-                     //ctx->awaiter->m_client.m_scheduler->resume(ctx->awaiter->m_handle);
-
-                     delete ctx;
-                     delete req;
-                 });
-        lock.unlock();
+                         delete ctx;
+                         delete req;
+                     });
+        });
     }
 
     auto client::write_awaiter::await_resume() -> std::variant<size_t, std::exception_ptr> {
@@ -110,7 +111,10 @@ namespace coro::uv::tcp {
     }
 
     auto client::_accept(uv_stream_t* server) -> int {
-        const auto status = uv_accept(server, reinterpret_cast<uv_stream_t *>(m_uv_client));
+        const int status = m_scheduler->execute_locked<int>(
+            [this, server] -> int {
+                return uv_accept(server, reinterpret_cast<uv_stream_t *>(m_uv_client));
+            });
         if (status != 0) {
             close();
             return status;
@@ -251,38 +255,40 @@ namespace coro::uv::tcp {
 
         m_connect_handle.data = this;
 
-        sockaddr_in addr_in {};
+        sockaddr_in addr_in{};
         uv_ip4_addr(m_addr.host().c_str(), m_addr.port(), &addr_in);
 
-        auto lock = m_scheduler->get_lock();
-        uv_tcp_connect(&m_connect_handle, m_tcp_handle,
-            reinterpret_cast<const sockaddr *>(&addr_in),
-            [](uv_connect_t* req, int status) {
-                auto* awaiter = static_cast<tcp_connect_awaiter *>(req->data);
-                if (status != 0) {
-                    awaiter->m_result.emplace<std::exception_ptr>(
-                        std::make_exception_ptr(std::runtime_error("connect failed")));
+        m_scheduler->execute_locked<void>([this, addr_in] {
+            uv_tcp_connect(&m_connect_handle, m_tcp_handle,
+                           reinterpret_cast<const sockaddr *>(&addr_in),
+                           [](uv_connect_t* req, int status) {
+                               auto* awaiter = static_cast<tcp_connect_awaiter *>(req->data);
+                               if (status != 0) {
+                                   awaiter->m_result.emplace<std::exception_ptr>(
+                                       std::make_exception_ptr(std::runtime_error("connect failed")));
 
-                    uv_close(reinterpret_cast<uv_handle_t *>(awaiter->m_tcp_handle), [](uv_handle_t* handle) {
-                        delete reinterpret_cast<uv_tcp_t *>(handle);
-                    });
+                                   uv_close(reinterpret_cast<uv_handle_t *>(awaiter->m_tcp_handle),
+                                            [](uv_handle_t* handle) {
+                                                delete reinterpret_cast<uv_tcp_t *>(handle);
+                                            });
 
-                    awaiter->m_handle.resume();
-                    return;
-                }
-                awaiter->m_result.emplace<tcp::client>(tcp::client(awaiter->m_scheduler, awaiter->m_tcp_handle));
+                                   awaiter->m_handle.resume();
+                                   return;
+                               }
+                               awaiter->m_result.emplace<tcp::client>(
+                                   tcp::client(awaiter->m_scheduler, awaiter->m_tcp_handle));
 
-                awaiter->m_handle.resume();
-            });
-
-        lock.unlock();
+                               awaiter->m_handle.resume();
+                           });
+        });
     }
 
     auto tcp_connect_awaiter::await_resume() -> std::variant<tcp::client, std::exception_ptr> {
         return std::move(m_result);
     }
 
-    auto connect(const std::shared_ptr<coro::uv_scheduler>& scheduler, const ip_address& addr) -> coro::task<tcp_result<tcp::client>> {
+    auto connect(const std::shared_ptr<coro::uv_scheduler>& scheduler,
+                 const ip_address& addr) -> coro::task<tcp_result<tcp::client>> {
         co_return co_await tcp_connect_awaiter(scheduler, addr);
     }
 }
