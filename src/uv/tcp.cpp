@@ -122,6 +122,18 @@ namespace coro::uv::tcp {
         return 0;
     }
 
+    auto client::close_awaiter::await_suspend(std::coroutine_handle<> handle) -> void {
+        m_handle = handle;
+
+        auto client = std::move(m_client);
+        client.m_uv_client->data = this;
+        uv_close(reinterpret_cast<uv_handle_t *>(client.m_uv_client), [](uv_handle_t* handle) {
+            auto* coro = reinterpret_cast<close_awaiter *>(handle->data);
+            delete reinterpret_cast<uv_tcp_t *>(handle);
+            coro->m_handle.resume();
+        });
+    }
+
     auto client::read(uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>> {
         co_return co_await read_awaiter(*this, buf, buf_size);
     }
@@ -130,15 +142,14 @@ namespace coro::uv::tcp {
         co_return co_await write_awaiter(*this, buf, buf_size);
     }
 
-    auto client::close() -> void {
+    auto client::close() -> coro::task<std::variant<std::monostate, std::exception_ptr>> {
         if (m_closed) {
-            return;
+            co_return { std::monostate() };
         }
 
         m_closed = true; // just suppose it has been closed, to prevent potential race
-        uv_close(reinterpret_cast<uv_handle_t *>(m_uv_client), [](uv_handle_t* handle) {
-            delete reinterpret_cast<uv_tcp_t *>(handle);
-        });
+        co_await close_awaiter(*this);
+        co_return { std::monostate() };
     }
 
     auto server::tcp_poll_awaiter::await_suspend(std::coroutine_handle<> handle) -> void {

@@ -75,6 +75,25 @@ namespace coro::uv::tcp {
             uint8_t* m_buf { nullptr };
         };
 
+        class close_awaiter {
+        public:
+            friend class client;
+
+            explicit close_awaiter(client& client)
+                : m_client(client) {}
+
+            auto await_ready() -> bool { return false; }
+
+            auto await_suspend(std::coroutine_handle<> handle) -> void;
+
+            auto await_resume() -> void {};
+
+        private:
+            bool m_should_suspend = true;
+            client& m_client;
+            std::coroutine_handle<> m_handle { nullptr };
+        };
+
         explicit client(std::shared_ptr<coro::uv_scheduler> scheduler)
             : m_scheduler(std::move(scheduler)) {
             m_uv_client = new uv_tcp_t;
@@ -108,7 +127,7 @@ namespace coro::uv::tcp {
 
         auto write(uint8_t* buf, size_t buf_size) -> coro::task<std::variant<size_t, std::exception_ptr>>;
 
-        auto close() -> void;
+        auto close() -> coro::task<std::variant<std::monostate, std::exception_ptr>>;
 
         auto _accept(uv_stream_t* server) -> int;
 
